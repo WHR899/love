@@ -3,81 +3,37 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>For You - Merry Christmas</title>
+    <title>Christmas Tree to Love</title>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
-
     <style>
-        body {
-            margin: 0;
-            padding: 0;
-            background-color: #000;
-            overflow: hidden;
-            touch-action: none; /* 禁止手机下拉刷新 */
-        }
-        canvas {
-            display: block;
-            position: absolute;
-            top: 0;
-            left: 0;
-        }
+        body { margin: 0; background: #000; overflow: hidden; touch-action: none; }
+        canvas { display: block; position: absolute; top: 0; left: 0; }
         .input_video { display: none; }
-        
-        #ui-layer {
-            position: absolute;
-            bottom: 20px;
-            width: 100%;
-            text-align: center;
-            color: rgba(255, 215, 0, 0.5);
-            font-family: serif;
-            font-size: 14px;
-            pointer-events: none;
-            z-index: 10;
-        }
         #loading {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: gold;
-            font-size: 16px;
-            text-align: center;
-            transition: opacity 0.5s;
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: gold; font-family: serif; text-align: center; pointer-events: none;
+        }
+        #hint {
+            position: absolute; bottom: 20px; width: 100%; text-align: center;
+            color: rgba(255, 215, 0, 0.4); font-size: 12px; pointer-events: none;
         }
     </style>
 </head>
 <body>
-
     <video class="input_video" playsinline></video>
     <canvas id="canvas1"></canvas>
-    
-    <div id="loading">
-        正在准备礼物...<br>
-        <span style="font-size:12px; color:#aaa;">请允许摄像头权限以体验魔法<br>或直接触摸屏幕</span>
-    </div>
-    <div id="ui-layer">挥手或触摸屏幕以切换回忆</div>
+    <div id="loading">正在编织圣诞树...<br><span style="font-size:12px;color:#666">加载完成后，触摸屏幕或张开手掌</span></div>
+    <div id="hint">握拳变树 · 张手变人</div>
 
     <script>
-        /**
-         * === 配置区域 ===
-         */
         const CONFIG = {
-            imageCount: 8,            // 图片总数
-            imagePrefix: 'love',      // 图片前缀
-            imageSuffix: '.jpg',      // 图片后缀
-            
-            // 手机性能优化设置
-            particleGap: 5,           // 采样间隔：手机建议 5-7，越小越卡但越清晰
-            particleSize: 2,          // 粒子大小
-            
-            // 物理参数
-            mouseRadius: 8000,        // 斥力范围
-            scatterForce: 30,         // 打散力度
-            returnSpeed: 0.08,        // 飞回原来的速度
-            
-            // 切换逻辑
-            switchThreshold: 100      // 粒子被打散多远后触发切换
+            particleCount: 2500,    // 粒子总数 (手机建议2000-3000)
+            particleSize: 2.2,
+            treeColor: 'rgba(255, 215, 0, 0.8)', // 圣诞树金色
+            morphSpeed: 0.08,       // 变形速度
+            imagePath: 'love1.jpg'  // 你的照片文件名
         };
 
         const canvas = document.getElementById('canvas1');
@@ -87,273 +43,84 @@
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
 
-        let particlesArray = [];
-        let imageCoordinates = []; // 存储当前图片的粒子目标点
+        let particles = [];
+        let mode = 'TREE'; // 当前模式: TREE 或 IMAGE
+        let isHandOpen = false; // 手势状态
         
-        // 交互点 (手势或触摸)
-        let interactionPoints = []; 
-        
-        // 图片管理
-        let currentImageIndex = 1;
-        let isSwitching = false; // 防止重复切换
-        let loadedImages = {};   // 缓存图片
-
-        // --- 1. 粒子类 ---
+        // --- 1. 粒子类 (核心逻辑) ---
         class Particle {
-            constructor(x, y, color) {
+            constructor(index) {
                 this.x = Math.random() * canvas.width;
                 this.y = Math.random() * canvas.height;
-                this.targetX = x; // 目标位置
-                this.targetY = y;
-                this.color = color;
                 this.size = CONFIG.particleSize;
+                
+                // 圣诞树形态的目标点 (Spiral Cone)
+                // 算法：螺旋上升
+                const angle = index * 0.1;
+                const radius = (index / CONFIG.particleCount) * (canvas.width * 0.4);
+                this.treeX = canvas.width/2 + Math.cos(angle) * radius;
+                this.treeY = (canvas.height * 0.2) + (index / CONFIG.particleCount) * (canvas.height * 0.7);
+                // 让树稍微居中一点
+                this.treeColor = `rgba(255, ${200 + Math.random()*55}, 0, ${0.5 + Math.random()*0.5})`;
+
+                // 照片形态的目标点 (初始化为空，等图片加载)
+                this.imageX = this.treeX;
+                this.imageY = this.treeY;
+                this.imageColor = this.treeColor;
+
+                // 物理参数
                 this.vx = 0;
                 this.vy = 0;
-                this.friction = 0.92;
-                this.ease = CONFIG.returnSpeed;
-            }
-
-            // 更新目标点 (用于切图)
-            updateTarget(x, y, color) {
-                this.targetX = x;
-                this.targetY = y;
-                this.color = color;
-            }
-
-            draw() {
-                ctx.fillStyle = this.color;
-                ctx.fillRect(this.x, this.y, this.size, this.size); // 手机上 fillRect 比 arc 快
+                this.friction = 0.94;
+                this.ease = CONFIG.morphSpeed;
             }
 
             update() {
-                // 1. 交互斥力 (手势或触摸)
-                if (interactionPoints.length > 0) {
-                    for (let point of interactionPoints) {
-                        let dx = point.x - this.x;
-                        let dy = point.y - this.y;
-                        let distance = dx*dx + dy*dy;
-                        
-                        if (distance < CONFIG.mouseRadius) {
-                            const forceDirectionX = dx / distance;
-                            const forceDirectionY = dy / distance;
-                            const force = (CONFIG.mouseRadius - distance) / CONFIG.mouseRadius;
-                            const directionX = forceDirectionX * force * CONFIG.scatterForce;
-                            const directionY = forceDirectionY * force * CONFIG.scatterForce;
+                let targetX, targetY, targetColor;
 
-                            this.vx -= directionX;
-                            this.vy -= directionY;
-                            
-                            // 触发切图逻辑：如果粒子被打散得很厉害
-                            if (!isSwitching && force > 0.5) {
-                                triggerImageSwitch();
-                            }
-                        }
-                    }
-                }
-
-                // 2. 回归目标力
-                this.vx += (this.targetX - this.x) * this.ease;
-                this.vy += (this.targetY - this.y) * this.ease;
-
-                // 3. 物理应用
-                this.x += this.vx;
-                this.y += this.vy;
-                this.vx *= this.friction;
-                this.vy *= this.friction;
-            }
-        }
-
-        // --- 2. 图片处理 ---
-        
-        // 预加载所有图片以防卡顿
-        function preloadImages() {
-            let loadedCount = 0;
-            for(let i=1; i<=CONFIG.imageCount; i++) {
-                const img = new Image();
-                img.src = `${CONFIG.imagePrefix}${i}${CONFIG.imageSuffix}`;
-                img.onload = () => {
-                    loadedImages[i] = img;
-                    loadedCount++;
-                    if(loadedCount === 1) {
-                        // 第一张加载完就开始显示
-                        loading.style.display = 'none';
-                        processImageToPoints(loadedImages[1]);
-                        createParticles();
-                        animate();
-                    }
-                };
-            }
-        }
-
-        // 将图片转化为坐标点
-        function processImageToPoints(image) {
-            imageCoordinates = [];
-            
-            // 保持图片比例居中
-            const aspectRatio = image.width / image.height;
-            let drawWidth = canvas.width * 0.9; // 留点边距
-            let drawHeight = drawWidth / aspectRatio;
-            
-            if (drawHeight > canvas.height * 0.8) {
-                drawHeight = canvas.height * 0.8;
-                drawWidth = drawHeight * aspectRatio;
-            }
-            
-            const startX = (canvas.width - drawWidth) / 2;
-            const startY = (canvas.height - drawHeight) / 2;
-
-            // 离屏Canvas处理
-            const tempCanvas = document.createElement('canvas');
-            const tempCtx = tempCanvas.getContext('2d');
-            tempCanvas.width = canvas.width;
-            tempCanvas.height = canvas.height;
-            
-            tempCtx.drawImage(image, startX, startY, drawWidth, drawHeight);
-            const data = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
-
-            for (let y = 0; y < canvas.height; y += CONFIG.particleGap) {
-                for (let x = 0; x < canvas.width; x += CONFIG.particleGap) {
-                    const index = (y * 4 * canvas.width) + (x * 4);
-                    if (data.data[index + 3] > 128) { // 非透明
-                        const r = data.data[index];
-                        const g = data.data[index + 1];
-                        const b = data.data[index + 2];
-                        imageCoordinates.push({
-                            x: x,
-                            y: y,
-                            color: `rgb(${r},${g},${b})`
-                        });
-                    }
-                }
-            }
-        }
-
-        // 初始化或重置粒子
-        function createParticles() {
-            // 如果现有粒子比新坐标少，补齐
-            // 如果现有粒子比新坐标多，复用（多余的隐藏或飞出）
-            
-            // 这里为了效果平滑，我们尽量复用现有粒子对象
-            for(let i=0; i<imageCoordinates.length; i++) {
-                const target = imageCoordinates[i];
-                if (particlesArray[i]) {
-                    particlesArray[i].updateTarget(target.x, target.y, target.color);
+                // 状态机：决定粒子去哪
+                if (mode === 'IMAGE') {
+                    targetX = this.imageX;
+                    targetY = this.imageY;
+                    // 简单的颜色过渡逻辑（这里为了性能直接切颜色，如果需要渐变会很耗性能）
+                    this.color = this.imageColor; 
                 } else {
-                    particlesArray.push(new Particle(target.x, target.y, target.color));
+                    // 树模式：加一点旋转动画
+                    const time = Date.now() * 0.001;
+                    const wobble = Math.sin(time + this.y * 0.05) * 5;
+                    targetX = this.treeX + wobble;
+                    targetY = this.treeY;
+                    this.color = this.treeColor;
                 }
-            }
-            
-            // 如果新图片粒子变少了，把多余的粒子移除
-            if (particlesArray.length > imageCoordinates.length) {
-                particlesArray.splice(imageCoordinates.length);
-            }
-        }
 
-        // 切换图片的触发器
-        function triggerImageSwitch() {
-            isSwitching = true;
-            setTimeout(() => {
-                // 延迟一会，等粒子散开后再改变目标
-                currentImageIndex++;
-                if (currentImageIndex > CONFIG.imageCount) currentImageIndex = 1;
+                // 缓动飞向目标
+                const dx = targetX - this.x;
+                const dy = targetY - this.y;
                 
-                if (loadedImages[currentImageIndex]) {
-                    processImageToPoints(loadedImages[currentImageIndex]);
-                    createParticles(); // 粒子将飞向新目标
-                }
+                this.x += dx * this.ease;
+                this.y += dy * this.ease;
                 
-                // 冷却时间，防止一下子切好几张
-                setTimeout(() => { isSwitching = false; }, 2000); 
-            }, 300);
+                // 绘制
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.size, this.size);
+            }
         }
 
-        // --- 3. 动画循环 ---
-        function animate() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // --- 2. 图像处理 (计算粒子新家) ---
+        const img = new Image();
+        img.src = CONFIG.imagePath;
+        img.onload = () => {
+            loading.style.display = 'none';
+            // 离屏计算像素
+            const tempCanvas = document.createElement('canvas');
+            const tCtx = tempCanvas.getContext('2d');
             
-            for (let i = 0; i < particlesArray.length; i++) {
-                particlesArray[i].update();
-                particlesArray[i].draw();
-            }
-            requestAnimationFrame(animate);
-        }
+            // 保持比例缩放
+            const scale = Math.min(canvas.width / img.width, canvas.height / img.height) * 0.8;
+            const w = img.width * scale;
+            const h = img.height * scale;
+            const offsetX = (canvas.width - w) / 2;
+            const offsetY = (canvas.height - h) / 2;
 
-        // --- 4. 交互输入 (AI + 触摸) ---
-        
-        // 4.1 触摸支持 (Plan B: 没摄像头也能玩)
-        canvas.addEventListener('touchmove', function(e) {
-            e.preventDefault();
-            interactionPoints = [];
-            for (let i = 0; i < e.touches.length; i++) {
-                interactionPoints.push({
-                    x: e.touches[i].clientX,
-                    y: e.touches[i].clientY
-                });
-            }
-        }, {passive: false});
-
-        canvas.addEventListener('touchend', function() {
-            interactionPoints = [];
-        });
-
-        // 4.2 MediaPipe 手势识别
-        const videoElement = document.querySelector('.input_video');
-        
-        function onResults(results) {
-            // 清除之前的AI点，重新获取
-            // 注意：我们把AI点和触摸点合并处理，但优先处理触摸
-            // 这里简单处理：如果没有触摸，就用AI
-            if (canvas.ontouchstart) return; // 如果正在触摸，忽略AI
-
-            interactionPoints = [];
-            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                const landmarks = results.multiHandLandmarks[0];
-                // 获取手掌中心
-                const x = (1 - landmarks[9].x) * canvas.width;
-                const y = landmarks[9].y * canvas.height;
-                interactionPoints.push({x, y});
-            }
-        }
-
-        const hands = new Hands({locateFile: (file) => {
-            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-        }});
-        hands.setOptions({
-            maxNumHands: 1,
-            modelComplexity: 0, // 0最快(手机用)，1中等
-            minDetectionConfidence: 0.5,
-            minTrackingConfidence: 0.5
-        });
-        hands.onResults(onResults);
-
-        const camera = new Camera(videoElement, {
-            onFrame: async () => {
-                await hands.send({image: videoElement});
-            },
-            width: 480,   // 低分辨率节省手机性能
-            height: 640,
-            facingMode: 'user'
-        });
-        
-        // 尝试启动摄像头，失败也不报错，因为有触摸兜底
-        camera.start().catch(e => {
-            console.log("摄像头未启动，将使用触摸模式");
-            loading.innerHTML = "摄像头未授权<br>请直接触摸屏幕与照片互动";
-        });
-
-        // 窗口调整
-        window.addEventListener('resize', function(){
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-            if(loadedImages[currentImageIndex]) {
-                processImageToPoints(loadedImages[currentImageIndex]);
-                createParticles();
-            }
-        });
-
-        // 启动
-        preloadImages();
-
-    </script>
-</body>
-</html>
+            tempCanvas.width = w;
+            tempCanvas.h
